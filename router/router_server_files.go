@@ -639,42 +639,13 @@ func postGamePluginInstall(c *gin.Context) {
 	}
 
 	if data.IsDeleteAll {
-
-		if data.InstallFolder == "/" {
-			stats, err := s.Filesystem().ListDirectory("/")
-			if err != nil {
-				WithError(c, err)
-				return
-			}
-			for _, file := range stats {
-				if err := s.Filesystem().Delete(file.Name()); err != nil {
-					NewServerError(err, s).Abort(c)
-				}
-			}
-		} else {
-			if err := s.Filesystem().Delete(data.InstallFolder); err != nil {
-				WithError(c, err)
-				return
-			}
-		}
-
+		handleDeleteAll(s, c, data.InstallFolder)
 	} else {
-		for _, file := range *data.DeleteFiles {
-			if data.DeleteFromBase {
-				if !strings.HasPrefix(file, "/") {
-					file = "/" + file
-				}
-				file = data.InstallFolder + file
-			}
-
-			if file == "/" {
-				continue
-			}
-
-			if err := s.Filesystem().Delete(file); err != nil {
-				NewServerError(err, s).Abort(c)
-			}
-		}
+		handleDeleteFiles(s, c, HandleDeleteFiles{
+			InstallFolder:  data.InstallFolder,
+			DeleteFromBase: data.DeleteFromBase,
+			DeleteFiles:    data.DeleteFiles,
+		})
 	}
 
 	if err := s.Filesystem().HasSpaceErr(true); err != nil {
@@ -790,43 +761,58 @@ func postGamePluginUninstall(c *gin.Context) {
 	}
 
 	if data.IsDeleteAll {
-
-		if data.InstallFolder == "/" {
-			stats, err := s.Filesystem().ListDirectory("/")
-			if err != nil {
-				WithError(c, err)
-				return
-			}
-			for _, file := range stats {
-				if err := s.Filesystem().Delete(file.Name()); err != nil {
-					NewServerError(err, s).Abort(c)
-				}
-			}
-		} else {
-			if err := s.Filesystem().Delete(data.InstallFolder); err != nil {
-				WithError(c, err)
-				return
-			}
-		}
-
+		handleDeleteAll(s, c, data.InstallFolder)
 	} else {
-		for _, file := range *data.DeleteFiles {
-			if data.DeleteFromBase {
-				if !strings.HasPrefix(file, "/") {
-					file = "/" + file
-				}
-				file = data.InstallFolder + file
-			}
-
-			if file == "/" {
-				continue
-			}
-
-			if err := s.Filesystem().Delete(file); err != nil {
-				NewServerError(err, s).Abort(c)
-			}
-		}
+		handleDeleteFiles(s, c, HandleDeleteFiles{
+			InstallFolder:  data.InstallFolder,
+			DeleteFromBase: data.DeleteFromBase,
+			DeleteFiles:    data.DeleteFiles,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{})
+}
+
+func handleDeleteAll(s *server.Server, c *gin.Context, installFolder string) {
+	if installFolder == "/" {
+		stats, err := s.Filesystem().ListDirectory("/")
+		if err != nil {
+			WithError(c, err)
+			return
+		}
+		for _, file := range stats {
+			if err := s.Filesystem().Delete(file.Name()); err != nil {
+				NewServerError(err, s).Abort(c)
+			}
+		}
+	} else {
+		if err := s.Filesystem().Delete(installFolder); err != nil {
+			WithError(c, err)
+		}
+	}
+}
+
+type HandleDeleteFiles struct {
+	InstallFolder  string
+	DeleteFromBase bool
+	DeleteFiles    *[]string
+}
+
+func handleDeleteFiles(s *server.Server, c *gin.Context, data HandleDeleteFiles) {
+	for _, file := range *data.DeleteFiles {
+		if data.DeleteFromBase {
+			if !strings.HasPrefix(file, "/") {
+				file = "/" + file
+			}
+			file = data.InstallFolder + file
+		}
+
+		if file == "/" {
+			continue
+		}
+
+		if err := s.Filesystem().Delete(file); err != nil {
+			NewServerError(err, s).Abort(c)
+		}
+	}
 }
