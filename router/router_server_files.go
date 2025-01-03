@@ -620,3 +620,213 @@ func handleFileUpload(p string, s *server.Server, header *multipart.FileHeader) 
 
 	return nil
 }
+
+func postGamePluginInstall(c *gin.Context) {
+	s := ExtractServer(c)
+
+	var data struct {
+		InstallFolder  string    `binding:"required" json:"install_folder"`
+		FileURL        string    `binding:"required" json:"file_url"`
+		IsDeleteAll    bool      `json:"is_delete_all"`
+		DeleteFromBase bool      `json:"delete_from_base"`
+		DeleteFiles    *[]string `json:"delete_files"`
+		DecompressType *string   `json:"decompress_type"`
+	}
+
+	if err := c.BindJSON(&data); err != nil {
+		log.Debug(err.Error())
+		return
+	}
+
+	if data.IsDeleteAll {
+
+		if data.InstallFolder == "/" {
+			stats, err := s.Filesystem().ListDirectory("/")
+			if err != nil {
+				WithError(c, err)
+				return
+			}
+			for _, file := range stats {
+				if err := s.Filesystem().Delete(file.Name()); err != nil {
+					NewServerError(err, s).Abort(c)
+				}
+			}
+		} else {
+			if err := s.Filesystem().Delete(data.InstallFolder); err != nil {
+				WithError(c, err)
+				return
+			}
+		}
+
+	} else {
+		for _, file := range *data.DeleteFiles {
+			if data.DeleteFromBase {
+				if !strings.HasPrefix(file, "/") {
+					file = "/" + file
+				}
+				file = data.InstallFolder + file
+			}
+
+			if file == "/" {
+				continue
+			}
+
+			if err := s.Filesystem().Delete(file); err != nil {
+				NewServerError(err, s).Abort(c)
+			}
+		}
+	}
+
+	if err := s.Filesystem().HasSpaceErr(true); err != nil {
+		s.Log().Debug("Server doesn't have enough space")
+		WithError(c, err)
+		return
+	}
+
+	if len(downloader.ByServer(s.ID())) >= 3 {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "This server has reached its limit of 3 simultaneous remote file downloads at once. Please wait for one to complete before trying again.",
+		})
+		return
+	}
+
+	u, err := url.Parse(data.FileURL)
+	if err != nil {
+		if e, ok := err.(*url.Error); ok {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error": "An error occurred while parsing that URL: " + e.Err.Error(),
+			})
+			return
+		}
+		WithError(c, err)
+		return
+	}
+
+	s.Log().Debug("Checking scheme and host " + u.Scheme + " " + u.Host)
+
+	if u.Scheme == "" && u.Host == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "The URL provided does not contain a valid scheme.",
+		})
+		return
+	}
+
+	dl := downloader.New(s, downloader.DownloadRequest{
+		Directory: data.InstallFolder,
+		URL:       u,
+	})
+
+	download := func() error {
+		s.Log().WithField("download_id", dl.Identifier).WithField("url", u.String()).Info("starting pull of remote file to disk")
+		if err := dl.Execute(); err != nil {
+			s.Log().WithField("download_id", dl.Identifier).WithField("error", err).Error("failed to pull remote file")
+			return err
+		} else {
+			s.Log().WithField("download_id", dl.Identifier).Info("completed pull of remote file")
+		}
+		return nil
+	}
+
+	go func() {
+		_ = download()
+
+		file, err := s.Filesystem().Stat(dl.Path())
+		if err != nil {
+			s.Log().Debug("Failed to see download path?")
+			WithError(c, err)
+			return
+		}
+
+		if data.DecompressType != nil && *data.DecompressType == "unzip" {
+			s.Log().Debug("Decompressing with unzip")
+			err := s.Filesystem().SpaceAvailableForDecompression(data.InstallFolder, file.Name())
+			if err != nil {
+				if filesystem.IsErrorCode(err, filesystem.ErrCodeUnknownArchive) {
+					s.Log().Warn("failed to decompress file: unknown archive format")
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "The archive provided is in a format Wings does not understand."})
+					return
+				}
+				middleware.CaptureAndAbort(c, err)
+				return
+			}
+
+			if err := s.Filesystem().DecompressFile(data.InstallFolder, file.Name()); err != nil {
+				// If the file is busy for some reason just return a nicer error to the user since there is not
+				// much we specifically can do. They'll need to stop the running server process in order to overwrite
+				// a file like this.
+				if strings.Contains(err.Error(), "text file busy") {
+					s.Log().Warn("failed to decompress file: text file busy")
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+						"error": "One or more files this archive is attempting to overwrite are currently in use by another process. Please try again.",
+					})
+					return
+				}
+				middleware.CaptureAndAbort(c, err)
+				return
+			}
+		}
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"identifier": dl.Identifier,
+	})
+
+}
+
+func postGamePluginUninstall(c *gin.Context) {
+	s := ExtractServer(c)
+
+	var data struct {
+		InstallFolder  string    `binding:"required" json:"install_folder"`
+		DeleteFromBase bool      `json:"delete_from_base"`
+		IsDeleteAll    bool      `json:"is_delete_all"`
+		DeleteFiles    *[]string `json:"delete_files"`
+	}
+
+	if err := c.BindJSON(&data); err != nil {
+		log.Debug(err.Error())
+		WithError(c, err)
+		return
+	}
+
+	if data.IsDeleteAll {
+
+		if data.InstallFolder == "/" {
+			stats, err := s.Filesystem().ListDirectory("/")
+			if err != nil {
+				WithError(c, err)
+				return
+			}
+			for _, file := range stats {
+				if err := s.Filesystem().Delete(file.Name()); err != nil {
+					NewServerError(err, s).Abort(c)
+				}
+			}
+		} else {
+			if err := s.Filesystem().Delete(data.InstallFolder); err != nil {
+				WithError(c, err)
+				return
+			}
+		}
+
+	} else {
+		for _, file := range *data.DeleteFiles {
+			if data.DeleteFromBase {
+				if !strings.HasPrefix(file, "/") {
+					file = "/" + file
+				}
+				file = data.InstallFolder + file
+			}
+
+			if file == "/" {
+				continue
+			}
+
+			if err := s.Filesystem().Delete(file); err != nil {
+				NewServerError(err, s).Abort(c)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{})
+}

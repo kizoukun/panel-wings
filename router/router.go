@@ -96,6 +96,12 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 			files.DELETE("/pull/:download", middleware.RemoteDownloadEnabled(), deleteServerPullRemoteFile)
 		}
 
+		gamePlugins := server.Group("/game-plugins")
+		{
+			gamePlugins.POST("/install", postGamePluginInstall)
+			gamePlugins.POST("/uninstall", postGamePluginUninstall)
+		}
+
 		backup := server.Group("/backup")
 		{
 			backup.POST("", postServerBackup)
